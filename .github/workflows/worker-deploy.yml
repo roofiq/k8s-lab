@@ -1,0 +1,74 @@
+name: Worker deployment
+
+on:
+  workflow_run:
+    workflows: [Lab setup]
+    branches: [main]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: malinka-deployment
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build and deploy the Go worker
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: [self-hosted, Linux, ARM64, malinka]
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    env:
+      SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+      IMAGE: k8s-lab-go-worker:${{ github.event.workflow_run.head_sha }}
+
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Skip superseded setup runs
+        id: revision
+        run: |
+          if [ "$(git rev-parse HEAD)" = "$SOURCE_SHA" ]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "current=false" >> "$GITHUB_OUTPUT"
+            echo "A newer commit is on main; wait for its setup run."
+          fi
+
+      - name: Build and load image
+        if: steps.revision.outputs.current == 'true'
+        run: |
+          set -euo pipefail
+          runner_user="$(id -un)"
+
+          # Fresh sudo sessions pick up Docker group membership added by Ansible.
+          sudo -n -H -u "$runner_user" docker --host unix:///var/run/docker.sock build \
+            --file cmd/worker/Dockerfile --tag "$IMAGE" .
+          sudo -n -H -u "$runner_user" env \
+            DOCKER_HOST=unix:///var/run/docker.sock DOCKER_CONTEXT= \
+            KIND_EXPERIMENTAL_PROVIDER=docker \
+            /usr/local/bin/kind load docker-image "$IMAGE" --name lab
+
+      - name: Deploy worker
+        if: steps.revision.outputs.current == 'true'
+        run: |
+          set -euo pipefail
+          kubeconfig="$HOME/.kube/k8s-lab.yaml"
+
+          kubectl set image --local -f k8s/worker.yaml go-worker="$IMAGE" -o yaml \
+            | kubectl --kubeconfig "$kubeconfig" --context kind-lab apply -f -
+          kubectl --kubeconfig "$kubeconfig" --context kind-lab \
+            rollout status deployment/go-worker --timeout=180s
+          kubectl --kubeconfig "$kubeconfig" --context kind-lab \
+            logs deployment/go-worker --tail=20

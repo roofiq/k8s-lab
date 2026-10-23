@@ -10,3 +10,7 @@
 - name: Install kubectl
   ansible.builtin.import_playbook: playbooks/kubectl.yml
   tags: [kubectl]
+
+- name: Configure the lab cluster
+  ansible.builtin.import_playbook: playbooks/cluster.yml
+  tags: [cluster]

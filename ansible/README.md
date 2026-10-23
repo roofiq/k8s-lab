@@ -1,4 +1,4 @@
-# Ansible lab: Docker, kind and kubectl on malinka
+# Ansible lab: Kubernetes on malinka
 
 The GitHub runner and the managed machine are the same Raspberry Pi. Ansible runs locally; this setup does not use SSH.
 
@@ -8,6 +8,9 @@ The GitHub runner and the managed machine are the same Raspberry Pi. Ansible run
 - `site.yml`: the main entry point. It imports component playbooks in order; the workflow always calls this file.
 - `playbooks/docker.yml`: the Docker component playbook, containing one play for the `lab` group. Tasks run in order. It installs Docker, starts its service and verifies the daemon.
 - `playbooks/kind.yml` and `playbooks/kubectl.yml`: install pinned Linux ARM64 binaries in `/usr/local/bin` and verify that the commands run.
+- `playbooks/cluster.yml`: gives the runner Docker access, creates the `lab` cluster if missing and waits for its nodes to become Ready.
+- `../kind/cluster.yml`: kind configuration with one control-plane node and one worker node, both using a pinned Kubernetes image. The API listens only on the Pi's loopback interface.
+- `../ansible.cfg`: forces sudo even when switching to the same user, so newly granted Docker group membership takes effect immediately. Run Ansible from the repository root.
 - `become: true`: execute tasks with elevated privileges, using sudo by default.
 - `ansible_facts`: information collected from the machine. The pre-task verifies Debian 13 before installing its packages.
 - `ansible.builtin.apt`: a built-in module for Debian packages. We install `docker.io` (Engine) and `docker-cli` (client), plus their dependencies.
@@ -19,9 +22,9 @@ Ansible describes the desired state. Running the playbook again should leave ins
 
 ## Pipeline
 
-Push to `main` -> checkout -> check sudo -> install Ansible tooling -> validate syntax -> apply `site.yml` (including each component's verification tasks).
+Push to `main` -> `lab-setup.yml` -> checkout -> check sudo -> install Ansible tooling -> validate syntax -> apply `site.yml` -> successful setup triggers the separate `worker-deploy.yml` workflow.
 
-Ansible must be installed before it can execute a playbook, so the workflow bootstraps `ansible-core` and `python3-apt` with apt. The playbooks install Docker, kind and kubectl. They do not create a cluster, deploy the worker, or change Docker group membership yet. Use `sudo docker ...` for now; Docker access for cluster creation will be configured in the next exercise.
+Ansible must be installed before it can execute a playbook, so the workflow bootstraps `ansible-core` and `python3-apt` with apt. The playbooks install Docker, kind and kubectl, add the current runner user to the Docker group, and configure the cluster. Application deployment belongs to the separate workflow; see [worker deployment](../k8s/README.md). Docker group membership grants control over the host through Docker.
 
 The runner currently runs as `roofi`. That account needs non-interactive sudo for this pipeline. On the Pi, check:
 
@@ -57,7 +60,7 @@ ansible-playbook -i ansible/inventory.ini ansible/site.yml -K
 sudo docker --host unix:///var/run/docker.sock version
 ```
 
-`--check --diff` previews supported changes instead of applying them. It is not a full test: on a fresh machine, the service task can fail because check mode did not actually install Docker. Try it after the first installation. Syntax checks do not verify package availability, sudo access or service health.
+`--check --diff` previews supported changes instead of applying them. The cluster-management block is skipped in check mode. It is not a full test: on a fresh machine, the service task can fail because check mode did not actually install Docker. Try it after the first installation. Syntax checks do not verify package availability, sudo access or service health.
 
 ## Binary installation: kind and kubectl
 
@@ -92,6 +95,30 @@ kubectl version --client
 `get_url` has limited check-mode support: it may contact the URL but does not download and verify the binary. A successful syntax check or dry run is not proof of a working installation.
 
 Sources: [kind release](https://github.com/kubernetes-sigs/kind/releases/tag/v0.33.0), [kind ARM64 checksum](https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-arm64.sha256sum), [kubectl installation](https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/), [kubectl ARM64 checksum](https://dl.k8s.io/release/v1.37.0/bin/linux/arm64/kubectl.sha256).
+
+## Cluster configuration
+
+`site.yml` runs the cluster playbook after installing the tools. It creates a two-node cluster named `lab` as the runner user (`roofi`): `lab-control-plane` and `lab-worker`. The worker starts with the label `node-pool: workloads`. After registration, Ansible adds `node-role.kubernetes.io/workloads: ""`, so kubectl displays its role as `workloads`. Kubernetes restricts role labels during kubelet registration, so they cannot go directly in the kind node labels. The kind configuration still uses `role: worker`; kind supports only `control-plane` and `worker` roles. The pinned node image and topology live in `kind/cluster.yml`.
+
+The playbook checks whether the cluster exists before creating it. On later runs it preserves the cluster and workloads, starts any exited node containers, refreshes the kubeconfig and waits for nodes to become Ready. This recovery runs during provisioning, not automatically on boot. Changing the node image or topology does not rebuild an existing cluster or add nodes to it; recreation is a separate, destructive operation. If the old single-node cluster already exists, it must be explicitly recreated before deploying the worker with its workloads node selector.
+
+The dedicated kubeconfig is `/home/roofi/.kube/k8s-lab.yaml`, readable only by its owner. Commands explicitly select it, so they do not overwrite or rely on another default Kubernetes context.
+
+After the initial setup, run only the cluster component or inspect it:
+
+```bash
+# From the repository root, as roofi. Requires the tools and Docker installed.
+ansible-playbook -i ansible/inventory.ini ansible/site.yml --tags cluster
+
+# Select the lab connection for commands in this terminal session.
+export KUBECONFIG="$HOME/.kube/k8s-lab.yaml"
+kubectl --context kind-lab get nodes
+kubectl --context kind-lab get pods
+```
+
+`--tags cluster` selects the imported cluster playbook. `export KUBECONFIG` tells kubectl which credentials and API address to use; `--context kind-lab` selects the cluster entry in that file.
+
+The setup and deployment use fresh sudo sessions for Docker operations, so the running GitHub runner does not need a restart to pick up the group change. For plain `docker` commands in an existing SSH session, log out and back in first.
 
 ## Add another component
 

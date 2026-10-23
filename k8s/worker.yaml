@@ -12,6 +12,8 @@ spec:
       labels:
         app: go-worker
     spec:
+      nodeSelector:
+        node-pool: workloads
       terminationGracePeriodSeconds: 15
       containers:
         - name: go-worker

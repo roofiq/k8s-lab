@@ -1,0 +1,142 @@
+---
+- name: Configure the kind lab cluster
+  hosts: lab
+  become: false
+  vars:
+    cluster_name: lab
+    cluster_user: "{{ ansible_facts['user_id'] }}"
+    cluster_home: "{{ ansible_facts['user_dir'] }}"
+    cluster_kubeconfig: "{{ cluster_home }}/.kube/k8s-lab.yaml"
+
+  pre_tasks:
+    - name: Require the regular runner account
+      ansible.builtin.assert:
+        that:
+          - cluster_user != 'root'
+        fail_msg: Run Ansible as the regular runner account; tasks elevate privileges where needed.
+
+    - name: Require sudo even when switching to the same user
+      ansible.builtin.assert:
+        that:
+          - lookup('ansible.builtin.config', 'BECOME_ALLOW_SAME_USER')
+        fail_msg: Run from the repository root so Ansible loads ansible.cfg.
+
+  tasks:
+    - name: Give the runner account Docker access
+      become: true
+      ansible.builtin.user:
+        name: "{{ cluster_user }}"
+        groups: docker
+        append: true
+
+    # A fresh sudo session reads the new Docker group membership immediately.
+    - name: Manage the cluster as the runner account
+      become: true
+      become_user: "{{ cluster_user }}"
+      environment:
+        HOME: "{{ cluster_home }}"
+        DOCKER_HOST: unix:///var/run/docker.sock
+        DOCKER_CONTEXT: ""
+        KIND_EXPERIMENTAL_PROVIDER: docker
+        KUBECONFIG: "{{ cluster_kubeconfig }}"
+      when: not ansible_check_mode
+      block:
+        - name: Create the private kubeconfig directory
+          ansible.builtin.file:
+            path: "{{ cluster_home }}/.kube"
+            state: directory
+            mode: '0700'
+
+        - name: List existing kind clusters
+          ansible.builtin.command:
+            argv: [/usr/local/bin/kind, get, clusters]
+          register: kind_clusters
+          changed_when: false
+
+        - name: Create the lab cluster if missing
+          ansible.builtin.command:
+            argv:
+              - /usr/local/bin/kind
+              - create
+              - cluster
+              - --name
+              - "{{ cluster_name }}"
+              - --config
+              - "{{ playbook_dir }}/../../kind/cluster.yml"
+              - --kubeconfig
+              - "{{ cluster_kubeconfig }}"
+              - --wait
+              - 180s
+          when: cluster_name not in kind_clusters.stdout_lines
+          changed_when: true
+
+        - name: Find lab nodes stopped after a reboot
+          ansible.builtin.command:
+            argv:
+              - docker
+              - --host
+              - unix:///var/run/docker.sock
+              - ps
+              - --all
+              - --quiet
+              - --filter
+              - "label=io.x-k8s.kind.cluster={{ cluster_name }}"
+              - --filter
+              - status=exited
+          register: stopped_nodes
+          changed_when: false
+
+        - name: Start stopped lab nodes
+          ansible.builtin.command:
+            argv: [docker, --host, unix:///var/run/docker.sock, start, "{{ item }}"]
+          loop: "{{ stopped_nodes.stdout_lines }}"
+          changed_when: true
+
+        - name: Read the lab connection configuration
+          ansible.builtin.command:
+            argv: [/usr/local/bin/kind, get, kubeconfig, --name, "{{ cluster_name }}"]
+          register: lab_connection
+          changed_when: false
+          no_log: true
+
+        - name: Save the dedicated lab kubeconfig
+          ansible.builtin.copy:
+            content: "{{ lab_connection.stdout }}\n"
+            dest: "{{ cluster_kubeconfig }}"
+            mode: '0600'
+          no_log: true
+
+        - name: Wait for the lab nodes to become Ready
+          ansible.builtin.command:
+            argv:
+              - /usr/local/bin/kubectl
+              - --kubeconfig
+              - "{{ cluster_kubeconfig }}"
+              - --context
+              - "kind-{{ cluster_name }}"
+              - wait
+              - --for=condition=Ready
+              - nodes
+              - --all
+              - --timeout=60s
+          register: node_readiness
+          until: node_readiness.rc == 0
+          retries: 6
+          delay: 10
+          changed_when: false
+
+        # Role labels are restricted during kubelet registration; add via the API.
+        - name: Display the workloads role on application nodes
+          ansible.builtin.command:
+            argv:
+              - /usr/local/bin/kubectl
+              - --kubeconfig
+              - "{{ cluster_kubeconfig }}"
+              - --context
+              - "kind-{{ cluster_name }}"
+              - label
+              - nodes
+              - --selector=node-pool=workloads,!node-role.kubernetes.io/workloads
+              - node-role.kubernetes.io/workloads=
+          register: workload_labels
+          changed_when: "'labeled' in workload_labels.stdout"

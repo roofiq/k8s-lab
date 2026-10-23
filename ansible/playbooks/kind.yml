@@ -1,0 +1,34 @@
+---
+- name: Install kind on the Raspberry Pi lab
+  hosts: lab
+  become: true
+  vars:
+    kind_version: v0.33.0
+    kind_sha256: 20022bee6cfcd5086cb7234d218e3454e6090022f2a8f55d1fa7fcf42c3867a2
+
+  pre_tasks:
+    - name: Check the supported platform
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['system'] == 'Linux'
+          - ansible_facts['architecture'] == 'aarch64'
+        fail_msg: This playbook installs the Linux ARM64 binary for Raspberry Pi.
+
+  tasks:
+    - name: Install the verified kind binary
+      ansible.builtin.get_url:
+        url: "https://github.com/kubernetes-sigs/kind/releases/download/{{ kind_version }}/kind-linux-arm64"
+        checksum: "sha256:{{ kind_sha256 }}"
+        dest: /usr/local/bin/kind
+        owner: root
+        group: root
+        mode: '0755'
+        timeout: 60
+
+    - name: Verify kind runs without creating a cluster
+      ansible.builtin.command:
+        argv:
+          - /usr/local/bin/kind
+          - version
+      changed_when: false
+      when: not ansible_check_mode

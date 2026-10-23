@@ -2,6 +2,35 @@
 
 The GitHub runner and the managed machine are the same Raspberry Pi. Ansible runs locally; this setup does not use SSH.
 
+## Raspberry Pi prerequisite: memory cgroups
+
+Before running the setup pipeline, check that the memory controller is enabled:
+
+```bash
+cat /sys/fs/cgroup/cgroup.controllers
+```
+
+The output must include `memory`. On this Raspberry Pi OS installation it was missing, and `/proc/cmdline` contained `cgroup_disable=memory`. Docker can still start in this state, but the Kubernetes setup needs the memory controller. The playbooks currently do not configure this boot setting.
+
+If `memory` is missing, back up and edit the boot command line:
+
+```bash
+# Keep an existing backup if one is already present.
+sudo cp -n /boot/firmware/cmdline.txt /boot/firmware/cmdline.txt.bak
+sudo nano /boot/firmware/cmdline.txt
+```
+
+Append `cgroup_enable=memory` after a space at the end of the existing line. Keep the entire file on **one line** and preserve the other boot parameters. Save with Ctrl+O, Enter, then exit with Ctrl+X.
+
+```bash
+# Apply the boot setting; SSH disconnects during the reboot.
+sudo reboot
+```
+
+Reconnect over SSH and run `cat /sys/fs/cgroup/cgroup.controllers` again. Confirm that `memory` is now listed before running the setup pipeline or rerunning its failed job. If it is still missing, resolve the kernel configuration before retrying cluster creation.
+
+Reference: [Raspberry Pi kernel support for cgroup_enable](https://github.com/raspberrypi/linux/blob/rpi-6.18.y/kernel/cgroup/cgroup.c).
+
 ## Files and concepts
 
 - `inventory.ini`: the machines to manage. `[lab]` is a group and `malinka` is a host alias. `ansible_connection=local` means the machine running Ansible, regardless of its hostname. Only use this inventory on the Pi.

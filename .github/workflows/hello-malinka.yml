@@ -1,22 +1,46 @@
-name: Hello from malinka
+name: Raspberry Pi lab
 
 on:
   push:
     branches: [main]
 
-permissions: {}
+permissions:
+  contents: read
+
+concurrency:
+  group: malinka-provisioning
+  cancel-in-progress: false
 
 jobs:
-  hello:
-    name: Hello world on Raspberry Pi
-    runs-on: [malinka]
-    timeout-minutes: 3
-    steps:
-      - name: Say hello and show runner details
+  setup:
+    name: Configure the lab with Ansible
+    if: github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, Linux, ARM64, malinka]
+    timeout-minutes: 20
+    defaults:
+      run:
         shell: bash
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Check unattended sudo access
         run: |
-          echo "Hello world from malinka!"
-          echo "Runner: $RUNNER_NAME"
-          echo "Hostname: $(hostname)"
-          echo "User: $(whoami)"
-          echo "Architecture: $(uname -m)"
+          if ! sudo -n true; then
+            echo "::error::Ansible needs unattended sudo on this lab runner. See ansible/README.md."
+            exit 1
+          fi
+
+      - name: Install Ansible tooling
+        run: |
+          sudo -n apt-get update
+          sudo -n apt-get install -y --no-install-recommends ansible-core python3-apt
+          ansible-playbook --version
+
+      - name: Validate the playbook
+        run: ansible-playbook -i ansible/inventory.ini ansible/site.yml --syntax-check
+
+      - name: Apply the lab configuration
+        run: ansible-playbook -i ansible/inventory.ini ansible/site.yml

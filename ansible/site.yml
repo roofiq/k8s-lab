@@ -1,0 +1,4 @@
+---
+- name: Configure Docker
+  ansible.builtin.import_playbook: playbooks/docker.yml
+  tags: [docker]

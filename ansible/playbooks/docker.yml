@@ -1,0 +1,38 @@
+---
+- name: Install Docker on the Raspberry Pi lab
+  hosts: lab
+  become: true
+
+  pre_tasks:
+    - name: Check the supported operating system
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['distribution'] == 'Debian'
+          - ansible_facts['distribution_major_version'] == '13'
+        fail_msg: This playbook uses Docker packages from Debian 13 repositories.
+
+  tasks:
+    - name: Install Docker Engine and its command-line client
+      ansible.builtin.apt:
+        name:
+          - docker.io
+          - docker-cli
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Start Docker and enable it at boot
+      ansible.builtin.systemd_service:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Verify the local Docker daemon
+      ansible.builtin.command:
+        argv:
+          - docker
+          - --host
+          - unix:///var/run/docker.sock
+          - version
+      changed_when: false
+      when: not ansible_check_mode

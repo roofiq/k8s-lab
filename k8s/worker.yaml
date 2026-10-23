@@ -17,20 +17,6 @@ spec:
         - name: go-worker
           image: k8s-lab-go-worker:local
           imagePullPolicy: IfNotPresent
-          env:
-            - name: WORK_INTERVAL
-              value: "5s"
-          ports:
-            - name: health
-              containerPort: 8080
-          readinessProbe:
-            httpGet:
-              path: /readyz
-              port: health
-          livenessProbe:
-            httpGet:
-              path: /healthz
-              port: health
           resources:
             requests:
               cpu: 50m

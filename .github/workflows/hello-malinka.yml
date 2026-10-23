@@ -1,0 +1,22 @@
+name: Hello from malinka
+
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  hello:
+    name: Hello world on Raspberry Pi
+    runs-on: [malinka]
+    timeout-minutes: 3
+    steps:
+      - name: Say hello and show runner details
+        shell: bash
+        run: |
+          echo "Hello world from malinka!"
+          echo "Runner: $RUNNER_NAME"
+          echo "Hostname: $(hostname)"
+          echo "User: $(whoami)"
+          echo "Architecture: $(uname -m)"

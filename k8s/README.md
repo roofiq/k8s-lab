@@ -29,4 +29,4 @@ kubectl --context kind-lab get deployment go-worker
 kubectl --context kind-lab logs deployment/go-worker --tail=20
 ```
 
-The scratch image is unchanged and does not include CA certificates yet. HTTPS calls can fail certificate verification. A successful rollout confirms the container starts; this worker has no readiness probe, so it does not prove successful HTTP requests.
+The scratch image includes the standard CA certificate bundle copied from the build stage, allowing Go to verify public HTTPS server certificates. Successful worker requests appear in the logs as `endpoint checked` with `status=200`. A successful rollout confirms the container starts; this worker has no readiness probe, so it does not prove successful HTTP requests.
